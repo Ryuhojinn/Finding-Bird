@@ -1,0 +1,17 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Finding Bird!</title><link rel="stylesheet" href="/style.css">
+<header><a href="/" class="brand"><img src="/art/0" alt="">Finding Bird!</a><button type="button" id="openHelp" aria-haspopup="dialog">게임 하는 방법</button></header>
+<main><section class="intro"><div><h1>Finding Bird<span>!</span></h1><p>새 종류 맞추기 스무고개 게임</p></div><div class="flock" aria-hidden="true"><img src="/art/2"><img src="/art/0"><img src="/art/3"></div></section>
+<div class="layout"><section class="panel game"><div class="top"><h2 id="role">추리 일지</h2><b id="count"></b></div><p id="hint"></p><img id="secret" hidden alt="이번 라운드의 새"><small id="notes"></small><div id="logs" role="log" aria-live="polite"></div><form id="form"><input id="msg" aria-label="채팅 입력" maxlength="256" placeholder="배가 노란색입니까?" autocomplete="off"><button>보내기</button></form><button id="next" hidden></button><p id="score" aria-live="polite"></p></section>
+<section class="panel"><div class="top"><h2>새 도감</h2><b id="total"></b></div><input id="search" aria-label="도감 검색" placeholder="이름으로 찾기"><details><summary>단서 사전</summary><input id="clueFilter" aria-label="단서 검색" placeholder="예: 꼬리, 부리 길이, 물갈퀴"><div id="clues"></div></details><div id="cards"></div></section></div></main>
+<dialog id="help" aria-labelledby="helpTitle">
+  <h2 id="helpTitle">게임 하는 방법</h2>
+  <ol>
+    <li><strong>첫 라운드에서는 플레이어가 새를 맞힙니다.</strong> “꼬리 끝이 두 갈래로 갈라져 있습니까?”처럼 특징을 하나씩 질문합니다. 후보가 떠오르면 도감에서 새를 골라 ‘이 새로 추측하기’를 누릅니다.</li>
+    <li><strong>두 번째 라운드에서는 삐오가 추리합니다.</strong> 플레이어에게만 공개된 사진을 보고 “그렇습니다”, “아닙니다”, “잘 모르겠습니다” 중 하나로 답합니다.</li>
+    <li><strong>질문과 정답 추측은 각각 1회로 계산합니다.</strong> 도감은 언제든지 열어 볼 수 있습니다. 양쪽 모두 20회 안에 맞히면 횟수가 적은 쪽이 승리합니다. 한쪽만 맞히면 그쪽이 승리합니다. 동점이면 새 사진으로 다시 대결합니다.</li>
+  </ol>
+  <h3>삐오는 어떻게 추리합니까?</h3>
+  <p>삐오는 새 200종의 학습용 사진에 기록된 특징을 바탕으로, 각 종에서 어떤 색과 무늬가 자주 나타나는지 학습했습니다. 플레이어가 대답할 때마다 후보별 가능성을 다시 계산하고, 남은 후보를 잘 구분할 질문을 고릅니다.</p>
+  <form method="dialog"><button autofocus>확인</button></form>
+</dialog>
+<dialog id="detail"><button id="close">닫기</button><img id="portrait" alt="도감 대표 모습"><h2 id="birdname"></h2><p id="traits"></p><button id="guess">이 새로 추측하기</button></dialog><script src="/ui.js"></script></html>

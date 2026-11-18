@@ -1,0 +1,6 @@
+CUB_200_2011/
+CUB_200_2011.tgz
+__pycache__/
+*.pyc
+.env
+.venv/
