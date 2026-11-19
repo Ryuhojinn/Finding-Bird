@@ -1,6 +1,5 @@
 """Finding Bird! Local two-round bird guessing game. Python 3.10+."""
 import json
-import math
 import os
 import random
 import re
@@ -13,10 +12,16 @@ from urllib.parse import urlsplit
 
 BASE = Path(__file__).resolve().parent
 ROOT = BASE / "CUB_200_2011"
-from clues import GROUPS, QUESTIONS, TRAITS, spoken_answer, interpret, species_facts
+from clues import particle, PATTERN_SOURCES, overall_pattern, WATER_CLUE, CASUAL_QUESTIONS, ROWS, PARTS, normalize, bill_choice, GROUPS, QUESTIONS, TRAITS, spoken_answer, interpret, species_facts
+VISUAL_GROUPS = ("primary_color", "wing_color", "breast_color", "belly_color",
+                 "head_pattern", "bill_shape", "back_color", "wing_pattern")
+VISUAL_PART = {k: group.split("_")[0] for group in VISUAL_GROUPS for k in GROUPS[group]}
+PHOTO_SCORES = {}
 QUESTION_COUNT = len(QUESTIONS)
 NAMES = []
 GUIDE = []
+REFERENCE_POOL = []
+REFERENCE_PATHS = {}
 POOL = []
 PHOTOS = {}
 EVIDENCE = {}
@@ -32,6 +37,7 @@ def load():
     for i in range(1,len(classes)+1):
         NAMES.append(classes[str(i)].split(".",1)[-1].replace("_"," "))
         GUIDE.append(None)
+        REFERENCE_POOL.append([])
         POOL.append([])
     counts = [[[1,2] for _ in range(QUESTION_COUNT)] for _ in NAMES]
     for img, label in labels.items():
@@ -39,6 +45,8 @@ def load():
         PHOTOS[img] = ROOT/"images"/paths[img]
         EVIDENCE[img] = [-1]*QUESTION_COUNT
         if splits[img]=="1":
+            REFERENCE_POOL[i].append(img)
+            REFERENCE_PATHS[img] = PHOTOS[img]
             if GUIDE[i] is None: GUIDE[i] = f"/guide/{i}"
         else: POOL[i].append(img)
     size_ids = {218, 219, 220, 221, 222}
@@ -68,6 +76,13 @@ def load():
                 pair = counts[int(labels[img])-1][k]
                 pair[0] += val
                 pair[1] += 1
+    for img, row in EVIDENCE.items():
+        for k, sources in PATTERN_SOURCES.items():
+            row[k] = overall_pattern(row, sources)
+            if row[k] >= 0 and splits[img] == "1":
+                pair = counts[int(labels[img])-1][k]
+                pair[0] += row[k]
+                pair[1] += 1
     PROFILES.extend([[a/b for a,b in row] for row in counts])
     for img, species in labels.items():
         values = species_facts(NAMES[int(species)-1])
@@ -78,17 +93,26 @@ def load():
         img = next(j for j in labels if int(labels[j])==i+1 and splits[j]=="1")
         PHOTOS[f"guide{i}"] = PHOTOS[img]
 
+def photo_score(photo):
+    if photo not in PHOTO_SCORES:
+        row = EVIDENCE[photo]
+        PHOTO_SCORES[photo] = sum(any(row[k] == 1 for k in GROUPS[group])
+                                 for group in VISUAL_GROUPS)
+    return PHOTO_SCORES[photo]
+
+
 def start(g, stage):
-    candidates = [(i,[x for x in pool if x not in g["used"]]) for i,pool in enumerate(POOL)]
+    candidates = [(i,[x for x in POOL[i] if x not in g["used"]]) for i in g["birds"]]
     choices = [(i,pool) for i,pool in candidates if pool]
     if not choices:
         g["used"].clear()
-        choices = list(enumerate(POOL))
+        choices = [(i, POOL[i]) for i in g["birds"]]
     i,pool = random.choice(choices)
-    pic = random.choice(pool)
+    pool = sorted(pool, key=photo_score, reverse=True)
+    pic = random.choice(pool[:max(1, (len(pool)+1)//2)])
     g["used"].add(pic)
     g.update(stage=stage,target=i,pic=pic,count=0,logs=[],prev=None,asked=set(),wrong=set(),
-             weights=[1/len(NAMES)]*len(NAMES),pending=None,ended=False,won=False)
+             hidden_parts=set(), clues={}, mixed=set(), remaining=g["birds"][:], weights=[1/len(g["birds"])]*len(g["birds"]),pending=None,ended=False,won=False)
     if stage==2: ai_turn(g)
 
 def log(g,who,msg): g["logs"].append([who,msg])
@@ -98,69 +122,219 @@ def finish(g, won):
     g["scores"][g["stage"]-1] = g["count"] if won else 21
     log(g,"결과",f"정답은 {NAMES[g['target']]}입니다. · {g['count']}회 사용")
 
+def guess_cost(masses, turns):
+    """Expected match score contribution, weighted by this answer's probability."""
+    spent = 20 - turns
+    return sum(mass * min(spent + rank, 21)
+               for rank, mass in enumerate(sorted(masses, reverse=True), 1))
+
+
+def next_clue(g, active):
+    turns = 20 - g["count"]
+    if len(active) <= 2 or turns <= 1:
+        return None
+
+    weights = [g["weights"][i] for i in active]
+    profiles = [PROFILES[g["birds"][i]] for i in active]
+    # Compare guessing in probability order with asking once, then guessing.
+    best_cost = guess_cost(weights, turns)
+    best_question = None
+    for k, part in VISUAL_PART.items():
+        if k in g["asked"] or part in g["hidden_parts"]:
+            continue
+        yes = [w * row[k] for w, row in zip(weights, profiles)]
+        no = [w - y for w, y in zip(weights, yes)]
+        cost = guess_cost(yes, turns - 1) + guess_cost(no, turns - 1)
+        if cost < best_cost - 1e-9:
+            best_question, best_cost = k, cost
+    return best_question
+
+
 def ai_turn(g):
-    weights=g["weights"]
-    best=max(range(len(weights)),key=weights.__getitem__)
-    available=set(range(QUESTION_COUNT))-g["asked"]
-    if weights[best]>.80 or len(g["wrong"])+1>=len(weights) or g["count"]>=19 or not available:
-        g["count"]+=1
-        log(g,"삐오",f"제 추측은 {NAMES[best]}입니다.")
-        if best==g["target"] or g["count"]==20:
-            finish(g,best==g["target"]); return
+    while not g["ended"]:
+        active = [i for i in range(len(g["birds"])) if i not in g["wrong"]]
+        k = next_clue(g, active)
+        g["count"] += 1
+        g["pending"] = k
+        if k is not None:
+            g["asked"].add(k)
+            log(g, "삐오", CASUAL_QUESTIONS[k])
+            return
+
+        weights = g["weights"]
+        best = max(active, key=weights.__getitem__)
+        species = g["birds"][best]
+        log(g, "삐오", f"내가 고른 새는… {NAMES[species]}!")
+        if species == g["target"] or g["count"] == 20:
+            finish(g, species == g["target"])
+            return
         g["wrong"].add(best)
-        weights[best]=0
-        norm=sum(weights)
-        g["weights"]=[w/norm for w in weights]
-        return ai_turn(g)
-    def entropy(x): return -x*math.log2(x)-(1-x)*math.log2(1-x)
-    def gain(k):
-        ps=[row[k] for row in PROFILES]
-        return entropy(sum(w*p for w,p in zip(weights,ps)))-sum(w*entropy(p) for w,p in zip(weights,ps))
-    k=max(sorted(available),key=gain)
-    g["asked"].add(k)
-    g["pending"]=k
-    g["count"]+=1
-    log(g,"삐오",QUESTIONS[k])
+        weights[best] = 0
+        total = sum(weights)
+        g["weights"] = [w / total for w in weights]
+
+def filter_guide(g, clue, value):
+    if value < 0 or clue in g["clues"]:
+        return
+    g["clues"][clue] = value
+    # A single possible puzzle photo must support all observed answers.
+    g["remaining"] = [
+        species for species in g["remaining"]
+        if any(all(EVIDENCE[photo][k] == v for k, v in g["clues"].items())
+               for photo in POOL[species])
+    ]
+
+
+def stated_colors(text, group):
+    # Accept a bare colour or a short declaration about the requested body part.
+    part = group.removesuffix("_color")
+    text = normalize(text)
+    text = re.sub(r"^(?:네|응|아니요|아니)", "", text)
+    for prefix in PARTS[part].split("|"):
+        if text.startswith(prefix):
+            text = re.sub(r"^(?:의)?(?:색깔|색)?(?:이|가|은|는)?", "", text[len(prefix):])
+            break
+    mentions = []
+    for segment in re.split(r"하고|이랑|랑|와|과|,", text):
+        for k in GROUPS[group]:
+            if any(re.fullmatch(re.escape(alias) + r"(?:색)?(?:이야|입니다|이에요|이다|이네|이라고|이래|야)?", segment)
+                   for alias in ROWS[k][1]):
+                mentions.append(k)
+                break
+        else:
+            return []
+    return list(dict.fromkeys(mentions))
+
 
 def message(g, raw):
     msg=raw.strip()
     if not msg or g["ended"]: return
     if g["stage"]==2:
-        if re.search("모르|안 보|안보|몰라|가려|애매|보이지 않|확인하기 어렵",msg): val=None
+        k=g["pending"]
+        group=ROWS[k][0]
+        colors = stated_colors(msg, group) if group.endswith("_color") else []
+        if colors: val = k in colors
+        elif re.search(r"모르|안\s*보|몰라|가려|애매|보이지\s*않|확인.{0,4}(어렵|불가)|잘못보겠",msg): val=None
         elif re.match("아니|아닙|아냐|없|ㄴ|아닌|그렇지 않",msg): val=False
         elif re.match("예|네|응|어|맞|보여|있|ㅇ|그래|그렇습니다",msg): val=True
         else:
             log(g,"안내","“그렇습니다”, “아닙니다”, “잘 모르겠습니다” 중 어느 쪽입니까?"); return
         log(g,"나",msg)
-        k=g["pending"]
-        if val is not None:
-            ws=[w*(row[k] if val else 1-row[k]) for w,row in zip(g["weights"],PROFILES)]
+        if colors or (val and group.endswith("_color")):
+            g["asked"].update(GROUPS[group])
+        evidence = [(k, val)] if not colors else [(j, True) for j in colors]
+        for k, val in evidence:
+            if val is None:
+                continue
+            ws=[w*(PROFILES[i][k] if val else 1-PROFILES[i][k]) for w,i in zip(g["weights"],g["birds"])]
             g["weights"]=[w/sum(ws) for w in ws]
-        if val is None and k in GROUPS["species_fact"]:
+        if val is None:
             g["count"]-=1
+            g["hidden_parts"].add(VISUAL_PART[k])
         ai_turn(g); return
     log(g,"나",msg)
     species = next((i for i,n in enumerate(NAMES) if msg.casefold() in (n.casefold(),f"정답 {n}".casefold())),None)
     if species is not None:
+        if species not in g["birds"]:
+            log(g,"삐오","이번 도감에는 없는 새야. 도감에 있는 친구 중에서 골라 볼까?")
+            return
         g["count"]+=1
         if species==g["target"] or g["count"]==20: finish(g,species==g["target"])
-        else: log(g,"삐오","다른 새입니다. 도감에서 다른 후보를 살펴볼 수 있습니다.")
+        else:
+            if species in g["remaining"]:
+                g["remaining"].remove(species)
+            log(g,"삐오","아쉽다, 내가 고른 새는 다른 친구야!")
         return
-    k = interpret(msg, g["prev"])
+    if bill_choice(msg):
+        known = [j for j in GROUPS["bill_length"] if EVIDENCE[g["pic"]][j] == 1]
+        if len(known) != 1:
+            log(g, "삐오", "부리 길이는 잘 모르겠어. 이번 질문은 횟수에서 빼 줄게!")
+            return
+        k = known[0]
+    else:
+        k = interpret(msg, g["prev"])
     if k is None:
-        log(g,"삐오","질문의 뜻을 파악하기 어렵습니다. 단서 사전에서 부위나 특징을 검색할 수 있습니다. 이번 질문은 횟수에 포함되지 않습니다.")
+        log(g,"삐오","앗, 그 질문은 잘 이해하지 못했어. 단서 사전에서 궁금한 부위를 찾아볼까? 이번 질문은 횟수에서 빼 줄게!")
         return
     g["prev"] = k
-    if k in GROUPS["species_fact"] and EVIDENCE[g["pic"]][k] < 0:
-        log(g,"삐오","이 새의 도감에는 해당 정보가 없습니다. 이번 질문은 횟수에 포함되지 않습니다.")
+    if EVIDENCE[g["pic"]][k] < 0:
+        reply = "음, 그 특징은 사진에서 잘 안 보여. 이번 질문은 횟수에서 빼 줄게!"
+        if k == WATER_CLUE:
+            reply = "이 친구는 도감에 물가 생활 정보가 없어. 이번 질문은 횟수에서 빼 줄게!"
+        # Suggest an answerable question without displaying its answer.
+        options = [j for j in VISUAL_PART if j not in g["clues"] and EVIDENCE[g["pic"]][j] >= 0]
+        if options:
+            def split_score(j):
+                probs = [PROFILES[i][j] for i in g["remaining"]]
+                return max(probs) - min(probs)
+            suggestion = max(options, key=split_score)
+            reply += f" 이렇게 물어보면 어때? “{CASUAL_QUESTIONS[suggestion]}”"
+        log(g,"삐오",reply)
         return
     g["count"]+=1
     value=EVIDENCE[g["pic"]][k]
-    log(g,"삐오",spoken_answer(k,value))
+    filter_guide(g, k, value)
+    reply = spoken_answer(k, value)
+    group = ROWS[k][0]
+    if group == "bill_length" and not value:
+        lengths = [j for j in GROUPS[group] if EVIDENCE[g["pic"]][j] == 1]
+        if len(lengths) == 1:
+            reply = "아니야. " + CASUAL_QUESTIONS[lengths[0]].removesuffix("?") + "."
+            filter_guide(g, lengths[0], 1)
+    if group.endswith("_color"):
+        colors = [j for j in GROUPS[group] if EVIDENCE[g["pic"]][j] == 1
+                  and ROWS[j][1][0] != "금속광택"]
+        feature = ROWS[k][1][0]
+        if not value and feature != "금속광택":
+            label = "검정색" if feature == "검은색" else feature
+            reply = f"아니, {particle(label, '은', '는')} 없어."
+        elif value and k in colors and len(colors) >= 2:
+            g["mixed"].add(group)
+            reply = "응! 다른 색이랑 섞여 있어."
+    log(g,"삐오",reply)
     if g["count"]==20: finish(g,False)
 
+def reference_rank(photo, clues):
+    row = EVIDENCE[photo]
+    matches = sum(row[k] == v for k, v in clues)
+    conflicts = sum(row[k] >= 0 and row[k] != v for k, v in clues)
+    return matches, -conflicts
+
+
+def reference_info(photo, clues):
+    row = EVIDENCE[photo]
+    return dict(image=f"/reference/{photo}", stripe=row[GROUPS["overall_pattern"][0]],
+                complete=all(row[k] == v for k, v in clues))
+
+
+def reference_cards(g):
+    cards = {}
+    clues = tuple(g["clues"].items())
+    for species in g["remaining"]:
+        pool = REFERENCE_POOL[species]
+        photo = max(pool, key=lambda p: reference_rank(p, clues)) if clues else pool[0]
+        cards[species] = reference_info(photo, clues)
+    return cards
+
+
+def public_notes(g):
+    notes = []
+    for k, value in g["clues"].items():
+        group, aliases, question = ROWS[k]
+        if group == "overall_pattern":
+            notes.append(aliases[0] + (" 있음" if value else " 없음"))
+        else:
+            notes.append(question + (" 예" if value else " 아니오"))
+        if group in g["mixed"]:
+            part = PARTS[group.removesuffix("_color")].split("|")[0]
+            note = part + "에 여러 색이 섞임"
+            if note not in notes:
+                notes.append(note)
+    return notes
+
+
 def state(g):
-    return dict(stage=g["stage"],count=g["count"],logs=g["logs"],ended=g["ended"],scores=g["scores"],
+    return dict(references=reference_cards(g), publicNotes=public_notes(g), birds=g["birds"],remaining=g["remaining"],stage=g["stage"],count=g["count"],logs=g["logs"],ended=g["ended"],scores=g["scores"],
         notes=[f"{QUESTIONS[k]} → {('아니요','예')[v] if v >= 0 else '기록 없음'}"
                for k,v in zip(GROUPS["species_fact"],species_facts(NAMES[g["target"]]))] if g["stage"]==2 else [],
         photo=f"/secret/{g['id']}/{g['stage']}" if g["stage"]==2 or g["ended"] else None)
@@ -184,6 +358,18 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/","/ui.js","/style.css"):
             name,mime={"/":("index.html","text/html; charset=utf-8"),"/ui.js":("ui.js","application/javascript"),"/style.css":("style.css","text/css")}[path]
             return self.send((BASE/"static"/name).read_bytes(),mime)
+        gallery = re.fullmatch(r"/gallery/([a-f0-9]{32})/(\d{1,3})", path)
+        if gallery:
+            g = GAMES.get(gallery[1])
+            species = int(gallery[2])
+            if not g or species not in g["remaining"]:
+                return self.send_error(404)
+            clues = tuple(g["clues"].items())
+            photos = sorted(REFERENCE_POOL[species], key=lambda p: reference_rank(p, clues), reverse=True)
+            return self.send(json.dumps([reference_info(p, clues) for p in photos]).encode(), "application/json")
+        if re.fullmatch(r"/reference/\d+",path):
+            photo = REFERENCE_PATHS.get(path.split("/")[-1])
+            if photo: return self.send(photo.read_bytes(),"image/jpeg")
         if re.fullmatch(r"/guide/\d+",path):
             photo=PHOTOS.get("guide"+path.split("/")[-1])
             if photo: return self.send(photo.read_bytes(),"image/jpeg")
@@ -199,8 +385,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data=json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if data["op"]=="start":
+                count = data.get("size", 10)
+                if type(count) is not int or not 2 <= count <= len(NAMES):
+                    return self.send_error(400)
+                birds = sorted(random.sample(range(len(NAMES)), count))
                 token=uuid.uuid4().hex
-                g=GAMES[token]={"id":token,"used":set(),"scores":[None,None]}
+                g=GAMES[token]={"id":token,"birds":birds,"used":set(),"scores":[None,None]}
                 start(g,1)
             else:
                 g=GAMES[data["id"]]
