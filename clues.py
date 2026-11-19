@@ -59,7 +59,7 @@ def formal_statement(sentence):
     raise ValueError(f"Unmapped predicate: {sentence}")
 
 CASUAL_QUESTIONS = []
-def add(group, aliases, text, negative="아닙니다."):
+def add(group, aliases, text, negative="아니야."):
     GROUPS.setdefault(group, []).append(len(ROWS))
     CASUAL_QUESTIONS.append(text)
     statement = formal_statement(text.removesuffix('?'))
@@ -71,7 +71,7 @@ def add(group, aliases, text, negative="아닙니다."):
 for line in (Path(__file__).parent/'data/cub_attributes.txt').read_text().splitlines():
     num, raw = line.split(maxsplit=1)
     group, value = raw[4:].split('::')
-    negative = "아닙니다."
+    negative = "아니야."
     if group in SPECIAL:
         index = len(GROUPS.get(group, []))
         alias = SPECIAL[group][index]
@@ -87,17 +87,17 @@ for line in (Path(__file__).parent/'data/cub_attributes.txt').read_text().splitl
         if kind=='color':
             if value=='iridescent':
                 sentence = f"{name}에서 금속 같은 광택이 나"
-                negative = f"아닙니다. {name}에서는 그런 광택이 보이지 않습니다."
+                negative = f"아니야. {name}에서는 그런 광택이 안 보여."
             else:
                 sentence = f"{particle(name,'이','가')} {feature}이야"
-                negative = f"아닙니다. {particle(name,'은','는')} {particle(feature,'이','가')} 아닙니다."
+                negative = f"아니야. {particle(name,'은','는')} {particle(feature,'이','가')} 아니야."
         elif value=='multi-colored':
             sentence = f"{name}에 여러 색이 섞인 무늬가 있어"
         elif value=='solid':
             sentence = f"{particle(name,'은','는')} 무늬 없이 한 가지 색이야"
         else:
             sentence = f"{name}에 {particle(feature,'이','가')} 있어"
-            negative = f"아닙니다. {name}에는 {particle(feature,'이','가')} 없습니다."
+            negative = f"아니야. {name}에는 {particle(feature,'이','가')} 없어."
     add(group, alias, sentence+'?', negative)
     assert int(num)==len(ROWS)
 add('broad_size','큰편|크다|크니|큰|커|클까','몸집이 큰 편이야?')
@@ -105,31 +105,54 @@ add('broad_size','작은편|작|조그|쪼그','몸집이 작은 편이야?')
 add('species_fact','물갈퀴','발가락 사이에 물갈퀴가 이어져 있어?')
 add('species_fact','물새','주로 물이나 물가에서 생활해?')
 add('species_fact','통통|다부진|다부져','이 종은 보통 통통하고 다부진 체형이야?')
+PATTERN_SOURCES = {}
+for pattern, aliases in (("줄무늬", "줄무늬|줄무늬새|줄이"),
+                         ("점무늬", "점무늬|점박이|반점")):
+    sources = [k for k, (group, names, _) in enumerate(ROWS)
+               if group.endswith("_pattern") and pattern in names]
+    add("overall_pattern", aliases, f"몸에 {particle(pattern,'이','가')} 있어?")
+    PATTERN_SOURCES[len(ROWS)-1] = sources
+
+def overall_pattern(row, sources):
+    values = [row[k] for k in sources]
+    if 1 in values:
+        return 1
+    return 0 if all(value == 0 for value in values) else -1
+
 QUESTIONS=[row[2] for row in ROWS]
 
 def spoken_answer(index, value):
     if index == WATER_CLUE and value >= 0:
-        return ("도감에서 이 종은 물이나 물가를 주로 이용하는 새로 분류됩니다." if value
-                else "도감에서 이 종은 물이나 물가를 주로 이용하는 새로 분류되지 않습니다.")
+        return ("응! 도감에 따르면 주로 물이나 물가에서 지내는 새야." if value
+                else "아니야. 도감에서는 물가를 주로 찾는 새로 분류하지 않아.")
     if value < 0:
-        return "사진만으로는 확인하기 어렵습니다."
+        return "사진만 봐서는 잘 모르겠어."
     if not value:
         return NEGATIVE[index]
-    return "네, " + TRAITS[index] + "."
+    return "응, " + CASUAL_QUESTIONS[index].removesuffix("?") + "!"
 
 def normalize(text):
     return re.sub(r"[\s?!？‘’.,]", "", text.lower())
 EXACT = {normalize(q): i for forms in (CASUAL_QUESTIONS, QUESTIONS) for i, q in enumerate(forms)}
 
 # Compose location, habitat verb and conversational ending independently.
-WATER_PLACE = r"(?:바닷가|바다|바닷물|해안가?|해변|연안|갯벌|강가?|하천|계곡|냇가|개울|민물|담수|호숫가|호수|연못|저수지|늪지?|습지|물가|물속|수변|물)"
+WATER_PLACE = r"(?:물가쪽|물가근방|강변|물가근처|바닷가|바다|바닷물|해안가?|해변|연안|갯벌|강가?|하천|계곡|냇가|개울|민물|담수|호숫가|호수|연못|저수지|늪지?|습지|물가|물속|수변|물)"
 WATER_LOCATION = WATER_PLACE + r"(?:근처|가까이|주변|인근|부근|가운데|쪽|속)?(?:에서|에|에도|에서도|가|이|인가|입니까|야|예요|이에요|인가요|는|은|도)?"
 PREFIX = r"(?:(?:그럼|그러면|혹시|이새는|이새가|이새|그새는|얘는|얘가|얘|보통|주로|평소에|평소|원래|주서식지가|서식지가|서식지는|사는곳이|사는곳은))*"
 HABITAT_VERB = r"(?:살(?:아|아요|까|까요|지|죠|고있|고있어|고있나요|고있습니까|기도해|기도하나요|아가는|아가는편|던)?|사(?:니|나요|는|는편|는거|는건가|는건지|는지|는곳)|삽니까|산다|서식(?:해|해요|하니|하나요|합니까|하는|하는편|하는지)|생활(?:해|해요|하니|하나요|합니까|하는|하는편)|지내(?:니|나요|는|는편)?|지냅니까)"
 ENDING = r"(?:새|종|편|거|것|곳|환경)?(?:야|니|요|인가|인가요|일까|일까요|맞아|맞나요|예요|이에요|입니까|하니|하나요)?"
 WATER_QUESTION = re.compile(PREFIX + WATER_LOCATION + r"(?:주로|보통|자주)?" + HABITAT_VERB + ENDING)
-WATER_NOUN = re.compile(PREFIX + r"(?:물새|바닷새|바다새|해양성조류|수생조류|수조류)" + ENDING)
+WATER_NOUN = re.compile(PREFIX + r"(?:물태그가있는새|물태그|물새|바닷새|바다새|해양성조류|수생조류|수조류)" + ENDING)
 WATER_CLUE = GROUPS['species_fact'][1]
+
+BILL_LONG = r"(?:긴|길어|길다|길지|깁|기니|길)"
+BILL_SHORT = r"(?:짧|작|작은)"
+def bill_choice(text):
+    text = normalize(text)
+    return bool(re.fullmatch(r"(?:혹시)?부리(?:가|는|길이가)?"+BILL_LONG+
+                             r"(?:편)?(?:이냐|가요|가|지|야)?"+BILL_SHORT+
+                             r".{0,2}(?:편)?(?:이냐|인가요|인가|이야|야|나요)?", text))
+
 
 def interpret(text, previous=None):
     text=normalize(text)
@@ -144,6 +167,11 @@ def interpret(text, previous=None):
         return WATER_CLUE
     if (previous == WATER_CLUE or re.search("서식지|사는곳",text)) and re.fullmatch(PREFIX + WATER_LOCATION + ENDING,text):
         return WATER_CLUE
+    for k in PATTERN_SOURCES:
+        aliases = "|".join(ROWS[k][1])
+        if re.fullmatch(PREFIX + r"(?:몸전체에|몸에|깃털에|몸통에)?(?:" + aliases +
+                        r")(?:가|이|도|는)?(?:있어|있을까|있는지|있을까요|있어요|있나요|있니|있나|있습니까|있는편|인가요|야|야해)?", text):
+            return k
     # Match the longest part first: 꼬리윗면 is more specific than 꼬리.
     parts=set()
     rest=text
@@ -151,6 +179,12 @@ def interpret(text, previous=None):
         if token in rest:
             parts.add(part)
             rest=rest.replace(token,'')
+    if parts == {'bill'}:
+        descriptor = re.sub(r"^(?:혹시)?(?:가|는|길이가)?", "", rest)
+        ending = r"(?:은|아|나요|습니까|냐|니|다|지)?(?:편)?(?:이냐|인가요|인가|이야|이니|이에요|입니까|야)?"
+        for pattern, k in ((BILL_LONG, GROUPS['bill_length'][1]), (BILL_SHORT, GROUPS['bill_length'][2])):
+            if re.fullmatch(pattern + ending, descriptor):
+                return k
     if len(parts) == 1:
         # A one-syllable colour shorthand is meaningful only as the whole descriptor.
         shorthand = {'검':'검정', '흑':'검정', '백':'흰색', '빨':'빨강', '파':'파랑', '노':'노랑'}
@@ -165,6 +199,7 @@ def interpret(text, previous=None):
             return next((k for k in GROUPS.get(sibling,[]) if ROWS[k][1][0]==aliases[0]),None)
     candidates=[]
     for group, indices in GROUPS.items():
+        if group == "overall_pattern": continue
         part=group.rsplit('_',1)[0]
         if part in PARTS:
             if part not in parts and not (part=='primary' and not parts and group.endswith('_color')): continue
